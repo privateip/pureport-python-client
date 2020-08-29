@@ -6,15 +6,23 @@
 from __future__ import absolute_import
 
 import os
+import sys
 import glob
+import shlex
 import importlib
 
 from click import (
     group,
     option,
     pass_context,
-    version_option
+    version_option,
+    Command,
+    echo
 )
+
+import click
+
+from pureport_client import __version__
 
 from pureport_client.client import Client
 
@@ -91,4 +99,127 @@ def make(cli):
 
 def run():
     make(cli)
-    cli()
+
+    if len(sys.argv) == 1:
+        shell()
+    else:
+        cli()
+
+
+def shell():
+    context = list()
+    prompt = "> "
+    mode = None
+
+    echo("pureport cli {}".format(__version__))
+    line = ''
+    lineidx = 0
+    history = list()
+
+    while True:
+        if context:
+            prompt = "[edit {}]\r\n> ".format(' '.join(context))
+        else:
+            prompt = "> "
+            mode = None
+
+        echo('\r\n{}'.format(prompt), nl=False)
+
+        while True:
+            char = click.getchar(echo=True)
+
+            import q
+            q(char)
+            if len(char) == 1:
+                q(ord(char))
+
+            # Up Arrow
+            if char == '\x1b[A':
+                echo('\r')
+                echo(u'\u001b[1K', nl=False)
+                echo(prompt, nl=False)
+                lineidx -= 1
+                if (lineidx * -1) >= len(history):
+                    echo('\x07')  # bell alert
+                    line = history[0]
+                else:
+                    line = history[lineidx]
+                echo(line, nl=False)
+
+            # ?
+            elif ord(char) == 63:
+                line = 'help'
+                echo('\r')
+                break
+
+            # Control-C
+            elif ord(char) == 3:
+                sys.exit(1)
+
+            # Arrow keys
+            elif ord(char) == 27:
+                import q; q.d()
+
+            # Backspace
+            elif ord(char) == 127:
+                line = line[:-1]
+                echo('\b', nl=False)
+                echo(u'\u001b[0K', nl=False)
+
+            # Enter
+            elif ord(char) == 13:
+                echo('\r')
+                break
+
+            elif 32 <= ord(char) <=126:
+                line += char
+
+        history.append(line)
+        cmdline = shlex.split(line)
+        line = ''
+        lineidx = 0
+
+        if not cmdline:
+            continue
+
+        elif cmdline[0].lower() in ('exit', 'quit'):
+            sys.exit(0)
+
+        elif cmdline[0].lower() == 'edit':
+            context = cmdline[1:]
+            mode = 'edit'
+
+        elif cmdline[0].lower() == 'top':
+            context = list()
+
+        elif cmdline[0].lower() == 'up':
+            if context:
+                context.pop(-1)
+
+        elif cmdline[-1].lower() == 'help':
+            cmd = cli
+
+            cmds = context.copy()
+            cmds.extend(cmdline[:-1])
+
+            for item in cmds:
+                if isinstance(item, Command):
+                    cmd = item
+                    break
+                cmd = cmd.commands.get(item)
+
+            print("Possible completions")
+            for key, value in cmd.commands.items():
+                echo('  {:<25} {}\r'.format(key, value.help.strip()))
+
+        elif mode == 'edit':
+            echo(cmdline)
+
+        else:
+            try:
+                command = context.copy()
+                command.extend(cmdline)
+                cli(command)
+            except SystemExit as exc:
+                pass
+
