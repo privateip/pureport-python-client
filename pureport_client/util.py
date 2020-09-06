@@ -5,16 +5,13 @@
 
 from __future__ import absolute_import
 
-from functools import update_wrapper
+import json
+import inspect
+import logging
+import functools
+import importlib
 
-from json import dumps as json_dumps
-from json import loads as json_loads
-from json import JSONDecodeError
-
-from inspect import (
-    getfullargspec,
-    isroutine
-)
+import yaml
 
 from click import (
     command,
@@ -27,7 +24,8 @@ from click import (
     ParamType
 )
 
-from yaml import dump as yaml_dumps
+
+log = logging.getLogger(__name__)
 
 
 class JsonParamType(ParamType):
@@ -50,8 +48,8 @@ class JsonParamType(ParamType):
 
     def convert(self, value, param, ctx):
         try:
-            return json_loads(value, **self._kwargs)
-        except JSONDecodeError:
+            return json.loads(value, **self._kwargs)
+        except json.JSONDecodeError:
             self.fail('%s is not a valid json string' % value, param, ctx)
 
     def __repr__(self):
@@ -93,26 +91,45 @@ def create_print_wrapper(f):
     :returns: the wrapped function
     :rtype: function
     """
-    def new_func(*args, **kwargs):
+    def render(*args, **kwargs):
         response_format = kwargs.pop('format')
         response = f(*args, **kwargs)
+
         # if the function returns a response, we'll just echo it as JSON
         if response is not None:
-            if response_format == 'json_pp':
-                echo(json_dumps(response, indent=2, sort_keys=True))
-            elif response_format == 'json':
-                echo(json_dumps(response))
+            ###
+            # Lookup a rendering function based on the value of
+            # response_format.  If the rendering function does not exist
+            # then default to using json_pp
+            ###
+            if response_format == 'json':
+                echo(json.dumps(response, indent=2, sort_keys=True))
+            elif response_format == 'raw':
+                echo(json.dumps(response))
             elif response_format == 'yaml':
-                echo(yaml_dumps(response))
+                echo(yaml.dump(response))
+            else:
+                try:
+                    module_name = f.__module__.replace('commands', 'templates')
+                    module = importlib.import_module(module_name)
+                    cls = getattr(module, 'Template')()
+                    getattr(cls, f.__name__)(response)
+                    echo(cls.render())
+                except (AttributeError, ImportError):
+                    echo(json.dumps(response, indent=2, sort_keys=True))
+
+
+        echo()
         return response
 
-    new_func = update_wrapper(new_func, f)
-    insert_click_param(new_func,
+    render = functools.update_wrapper(render, f)
+
+    insert_click_param(render,
                        Option(['--format'],
-                              type=Choice(['json_pp', 'json', 'yaml']),
-                              default='json_pp',
+                              type=Choice(['json', 'raw', 'yaml', 'human']),
                               help='Specify how responses should be formatted and echoed to the terminal.'))
-    return new_func
+
+    return render
 
 
 def create_client_group(f, name=None):
@@ -147,7 +164,7 @@ def create_client_group(f, name=None):
     def new_func(ctx, obj, *args, **kwargs):
         ctx.obj = actual_f(obj, *args, **kwargs)
 
-    new_func = update_wrapper(new_func, actual_f)
+    new_func = functools.update_wrapper(new_func, actual_f)
     return group(name)(new_func)
 
 
@@ -180,7 +197,7 @@ def create_client_command(f):
     def new_func(obj, *args, **kwargs):
         return actual_f(obj, *args, **kwargs)
 
-    new_func = update_wrapper(new_func, actual_f)
+    new_func = functools.update_wrapper(new_func, actual_f)
     return command()(new_func)
 
 
@@ -205,8 +222,8 @@ def is_regular_method(klass_or_instance, attr):
     """
     value = getattr(klass_or_instance, attr, None)
     result = False
-    if isroutine(value) and not isinstance(value, property):
-        args = getfullargspec(value).args
+    if inspect.isroutine(value) and not isinstance(value, property):
+        args = inspect.getfullargspec(value).args
         try:
             if args[0] == "self":
                 result = True
